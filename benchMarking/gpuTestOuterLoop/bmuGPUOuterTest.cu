@@ -2,73 +2,83 @@
 #include <iostream>
 #include <math.h>
 #include <vector>
+#include <stdio.h>
+#include <stdlib.h>
 
 using namespace std;
 
-double Distance(vector<double> a, vector<double> b){
-	if(a.size() != b.size()){
-		cout<<"Error! Cannot do distance between vectors!"<<endl;
-		return -1;
+#define W (5000)
+#define N (5000)
+
+
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true){
+	if (code != cudaSuccess){
+		fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+		if (abort) exit(code);
 	}
+}
+
+__global__ void DistanceForBMUCalc(double *input, double *v, double *x){
 	double d = 0;
-	for(int i = 0; i < a.size(); i++){
-		d += (a[i] - b[i]) * (a[i] - b[i]);
+	for(long long int i = 0; i < W; i++){
+		d += (v[i+W*blockIdx.x] - input[i]) * (v[blockIdx.x*W+i] - input[i]);
 	}
-	return sqrt(d); //to CPU and stored in an array
+	x[blockIdx.x] = sqrt(d);
 }
-
-__global__ void FindBMU(double *input, double **v, int *x){
-	x = 0;
-
-	double dmin = Distance(input, v[0]);
-	double d = 100 * fabs(dmin);
-//GPU starts here
-	for(int i = 0; i < v.size(); i++){
-		d = Distance(v[i], input);
-		if(d < dmin){ // CPU will compare everything in the array
-			dmin = d;
-			x = i;
-		}
-	}
-}
-
-#define C(1920)
 
 int main(int argc, char* argv[]){
 	int t_i = time(NULL);
 	srand(0);
+	
+	double *v;
+	double *d_v;
+	long long int size = N*W * sizeof(double);
 
-	double **v;
-	double **d_v;
-	int size = C * sizeof(int);
-
-	cudaMalloc((void **)&d_v, size);
+	long long int d_vSize = N*W * sizeof(double);
+	gpuErrchk(cudaMalloc((void **)&d_v, d_vSize));
 	v = (double *)malloc(size); 
-
-	for(int i = 0; i < v.size(); i++){
-		for(int j = 0; j < C; j++){
-			v[i][j] = rand();
-		}
+	
+	for(int i = 0; i < N*W; i++){
+		v[i] = rand();
 	}
-
-	int *BMUx;
-	cudaMalloc((void **)&d_BMUx, size);
-	BMUx = (int *)malloc(size);
+	
+	double *distances;
+	double *d_distances;
+	long long int distanceArraySize = N * sizeof(double);
+	gpuErrchk(cudaMalloc((void **)&d_distances, distanceArraySize));
+	distances = (double *)malloc(distanceArraySize);
 
 	double *training;
-	cudaMalloc((void **)&d_training, size);
-	training = (double *)malloc(size);
+	double *d_training;
+	long long int trainingSize = W * sizeof(double); 
+	gpuErrchk(cudaMalloc((void **)&d_training, trainingSize));
+	training = (double *)malloc(trainingSize);
 
-	for(int l = 0; l < training.size(); l++){
-		training[l] = rand();
+	for(int i = 0; i < W; i++){
+		training[i] = rand();
 	}
 
-	cudaMemcpy(d_v, v, size, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_training, training, size, cudaMemcpyHostToDevice);
+	for(int i = 0; i < 1; i++){
+		gpuErrchk(cudaMemcpy(d_v, v, size, cudaMemcpyHostToDevice));
 
-	for(int k = 0; k < C; k++){
-		FindBMU<<<C, 192>>>(d_training, d_v, d_BMUx);
+		gpuErrchk(cudaMemcpy(d_training, training, trainingSize, cudaMemcpyHostToDevice));
+
+		DistanceForBMUCalc<<<N, 192>>>(d_training, d_v, d_distances);
+
+		gpuErrchk(cudaMemcpy(distances, d_distances, distanceArraySize, cudaMemcpyDeviceToHost));
+
+		double dmin = distances[0];
+		//int index = 0;
+		for(int j = 0; j < N; j++){
+			//cout<<i<<" "<<distances[i]<<endl;
+			if(distances[j] < dmin){ 
+				dmin = distances[j];
+				//index = j;
+			}
+		}
 	}
+	//cout<<"BMU is "<<index<<endl;
 
 	int t_f = time(NULL);
 	int total_time = t_f - t_i;
